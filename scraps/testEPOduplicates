@@ -1,0 +1,51 @@
+#!/usr/bin/perl
+
+use strict; use warnings;
+use Data::Dumper;
+use Bio::EnsEMBL::Registry;
+use Ensembl;
+
+#my $species = "mus musculus";
+#my $chrom = "8";
+#my $left = 97227530;
+#my $right = 97227613;
+
+my $species = "homo sapiens";
+my $chrom = "16";
+#my $left = 57333862;
+#my $right = 57333945;
+my $left = 57334391;
+my $right = 57334474;
+
+my $registry = "Bio::EnsEMBL::Registry";
+$registry->load_registry_from_db(-host=>"ensembldb.ensembl.org",
+                                 -user=>"anonymous");
+my $mlssa = $registry->get_adaptor("Multi","compara","MethodLinkSpeciesSet");
+my $sliceAdapter = $registry->get_adaptor($species,"core","Slice");
+my $alignAdapter = $registry->get_adaptor("Multi","compara","AlignSlice");
+my $gabAdapter = $registry->get_adaptor("Multi","compara","GenomicAlignBlock");
+#my $mlss = $mlssa->fetch_by_method_link_type_species_set_name("EPO","mammals");
+my $mlss = $mlssa->fetch_by_method_link_type_species_set_name("PECAN","amniotes");
+
+my $slice = $sliceAdapter->fetch_by_region("toplevel",$chrom,$left,$right);
+my $blocks = $gabAdapter->fetch_all_by_MethodLinkSpeciesSet_Slice($mlss,$slice);
+
+foreach my $block (@$blocks) {
+  print "BLOCK BLOCK BLOCK\n";
+  my $nblock = $block->restrict_between_reference_positions($left,$right);
+  my $alns = $nblock->get_all_GenomicAligns();
+  foreach my $aln (@$alns) {
+    my $taxid = $aln->genome_db->taxon_id;
+    my $org;
+    if (exists $Ensembl::taxid2short->{$taxid}) {
+      $org = $Ensembl::taxid2short->{$taxid};
+    } else {
+      $org = "???";
+    }
+    my $chr = $aln->dnafrag->name;
+    my $l = $aln->dnafrag_start;
+    my $r = $aln->dnafrag_end;
+    my $strand = $aln->dnafrag_strand > 0 ? "+" : "-";
+    print "$taxid\t$org\tchr$chr\t$l\t$r\t$strand\n";
+  }
+}

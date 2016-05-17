@@ -1,0 +1,76 @@
+#!/usr/bin/perl
+
+use strict; use warnings;
+use Log::Log4perl qw(get_logger :levels);
+use Data::Dumper;
+use Anno::AnnotationServer;
+use Anno::AnnotationGroup;
+use Seq::Position;
+use IO::SeqIO;
+use Util;
+
+Util::log_init(level=>$DEBUG);
+$Data::Dumper::Maxdepth = 3;
+my $species = $ARGV[0];
+my $server = Anno::AnnotationServer->new(genome=>$species);
+my $fd = IO::SeqIO->newBySuffix(fn=>$ARGV[1],verbose=>1000);
+
+my $noAnnot = 0;
+my $seq;
+my %categories = ();
+my $current = "zork";
+my @block = ();
+while ($seq = $fd->next()) {
+  my $seqname = $seq->id()->name();
+  if ($seqname eq $current) {
+    push @block, $seq;
+  } else {
+    if (scalar @block > 0) {
+      $noAnnot += processBlock(\%categories,$server,\@block);
+    }
+    @block = ($seq);
+    $current = $seqname;
+  }
+}
+if (scalar @block > 0) {
+  $noAnnot += processBlock(\%categories,$server,\@block);
+}
+
+print sprintf("%.2f\tNoAnnot\n",$noAnnot);
+my @cats = keys %categories;
+@cats = sort @cats;
+foreach my $k (@cats) {
+#  print $categories{$k},"\t",$k,"\n";
+  print sprintf("%.2f\t%s\n",$categories{$k},$k);
+}
+
+################################################################################
+################################################################################
+
+sub processBlock {
+  my ($categories,$server,$block) = @_;
+  my $noAnnot = 0.0;
+
+  my $copynum = $block->[0]->tagcount();
+  
+  foreach my $seq (@$block) {
+    my $pos = $seq->position;
+    my $group = Anno::AnnotationGroup->new(position=>$pos);
+    my $annots = $server->fetchAnnotations(group=>$group);
+    if (defined $annots) {
+      my $best = $annots->getBest();
+      if (defined $best) {
+        my $category = $best->type;
+        if (!exists $categories->{$category}) {
+          $categories->{$category} = 0.0;
+        }
+        $categories->{$category} += $copynum;
+      } else {
+        $noAnnot += $copynum;
+      }
+    } else {
+      $noAnnot += $copynum;
+    }
+  }
+  return $noAnnot;
+}

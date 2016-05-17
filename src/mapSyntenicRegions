@@ -1,0 +1,99 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+use IO::SeqIO;
+
+$Data::Dumper::Maxdepth = 2;
+
+my $METHOD_DEFAULT = "PECAN";
+my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1,'rno'=>1};
+my $ROOT_DEFAULT = 'hsa';
+
+my ($method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+  );
+
+################################################################################
+
+sub processOptions {
+  $method = $METHOD_DEFAULT;
+  $genomes = $GENOMES_DEFAULT;
+  $root = $ROOT_DEFAULT;
+
+  my $genomeStr = undef;
+  my $rc = GetOptions("method=s" => \$method,
+                      "genomes=s" => \$genomeStr,
+                      "root=s" => \$root);
+  if (defined $genomeStr) {
+    $genomes = {};
+    my @flds = split ',', $genomeStr;
+    foreach my $gen (@flds) {
+      $genomes->{$gen} = 1;
+    }
+  }
+}
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+sub sortChroms {
+  my $an = $a->seq_region_name;
+  my $bn = $b->seq_region_name;
+  if ($an =~ /^\d+$/) {
+    if ($bn =~ /^\d+$/) {
+      return $an <=> $bn;
+    } else {
+      return -1;
+    }
+  } elsif ($bn =~ /^\d+$/) {
+    return 1;
+  } else {
+    return $an cmp $bn;
+  }
+}
+
+################################################################################
+
+&processOptions();
+Util::log_init(level=>$DEBUG);
+
+my $synteny = Synteny::Synteny->new($root,$method,$genomes);
+
+$synteny->loadMLSS() || die("failed to load MLSS");
+
+my $genomeDB = $synteny->getGenomeDB($root);
+my $slice_adaptor = &getSliceAdaptor($synteny,$root);
+
+autoflush STDOUT 1;
+
+my $seq;
+my $infile = IO::SeqIO->newBySuffix(fn=>$ARGV[0]);
+$seq = $infile->next();
+while ($seq) {
+  my $pos = $seq->position();
+  my $chrom = $seq->position()->shortChrom();
+  my $left = $pos->left();
+  my $right = $pos->right();
+  my $regions = $synteny->getRegions($genomeDB,$chrom,$left,$right);
+  print "blocks ",scalar @$regions,"\n";
+  foreach my $block (@$regions) {
+    print "block\n";
+    foreach my $tid (keys %$block) {
+      my $b = $block->{$tid};
+      print sprintf("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\n",$b->genome,$b->chrom,$b->left,$b->right,$b->right-$b->left+1,$b->orig_left,$b->orig_right,$b->orig_right-$b->orig_left+1);
+    }
+    print "end\n";
+  }
+  $seq = $infile->next();
+}
+exit(0);

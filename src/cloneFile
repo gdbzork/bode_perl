@@ -1,0 +1,17 @@
+#!/usr/bin/perl
+
+use strict; use warnings;
+use IO::SeqIO;
+use Log::Log4perl qw(get_logger :levels);
+use Util;
+
+Util::log_init(level=>$DEBUG);
+my $inFN = $ARGV[0];
+my $outFN = $ARGV[1];
+my $inFD = IO::SeqIO->newBySuffix(fn=>$inFN);
+open OUTFD, ">$outFN";
+
+my $seq;
+while ($seq = $inFD->next()) {
+  print OUTFD $seq->string();
+}

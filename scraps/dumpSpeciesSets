@@ -1,0 +1,24 @@
+#!/usr/bin/perl
+
+use strict; use warnings;
+use Data::Dumper;
+use Bio::EnsEMBL::Registry;
+use Ensembl;
+
+my $registry = "Bio::EnsEMBL::Registry";
+$registry->load_registry_from_db(-host=>"ensembldb.ensembl.org",
+                                 -user=>"anonymous");
+my $ssAdapter = $registry->get_adaptor("Multi","compara","SpeciesSet");
+my $sss = $ssAdapter->fetch_all();
+foreach my $ss (@$sss) {
+  print "SPECIES_SET\n";
+  print Dumper($ss);
+}
+
+#my $mlssa = $registry->get_adaptor("Multi","compara","MethodLinkSpeciesSet");
+
+
+#my $sliceAdapter = $registry->get_adaptor($species,"core","Slice");
+#my $alignAdapter = $registry->get_adaptor("Multi","compara","AlignSlice");
+#my $gabAdapter = $registry->get_adaptor("Multi","compara","GenomicAlignBlock");
+#my $mlss = $mlssa->fetch_by_method_link_type_species_set_name("EPO","mammals");

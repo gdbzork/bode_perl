@@ -1,0 +1,150 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+use IO::SeqIO;
+use Seq::Position;
+
+$Data::Dumper::Maxdepth = 2;
+
+my $METHOD_DEFAULT = "EPO";
+my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1};
+my $ROOT_DEFAULT = 'hsa';
+
+my ($method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+  );
+
+################################################################################
+
+sub processOptions {
+  $method = $METHOD_DEFAULT;
+  $genomes = $GENOMES_DEFAULT;
+  $root = $ROOT_DEFAULT;
+
+  my $genomeStr = undef;
+  my $rc = GetOptions("method=s" => \$method,
+                      "genomes=s" => \$genomeStr,
+                      "root=s" => \$root);
+  if (defined $genomeStr) {
+    $genomes = {};
+    my @flds = split ',', $genomeStr;
+    foreach my $gen (@flds) {
+      $genomes->{$gen} = 1;
+    }
+  }
+}
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+sub sortChroms {
+  my $an = $a->seq_region_name;
+  my $bn = $b->seq_region_name;
+  if ($an =~ /^\d+$/) {
+    if ($bn =~ /^\d+$/) {
+      return $an <=> $bn;
+    } else {
+      return -1;
+    }
+  } elsif ($bn =~ /^\d+$/) {
+    return 1;
+  } else {
+    return $an cmp $bn;
+  }
+}
+
+sub loadMouse {
+  my ($fd) = @_;
+  my $seq;
+  my $hits = [];
+  while ($seq = $fd->next()) {
+    push @$hits, $seq;
+  }
+  return $hits;
+}
+
+sub overlapMouse {
+  my ($pos,$mice) = @_;
+  my $overlap = "none";
+  foreach my $p (@$mice) {
+    if ($pos->overlap($p->position(),50)) {
+      $overlap = $p->id()->name();
+    }
+  }
+  return $overlap;
+}
+  
+
+################################################################################
+
+&processOptions();
+Util::log_init(level=>$DEBUG);
+
+my $synteny = Synteny::Synteny->new($root,$method,$genomes);
+
+$synteny->loadMLSS() || die("failed to load MLSS");
+
+my $genomeDB = $synteny->getGenomeDB($root);
+my $slice_adaptor = &getSliceAdaptor($synteny,$root);
+
+autoflush STDOUT 1;
+
+my $seq;
+my $infile = IO::SeqIO->newBySuffix(fn=>$ARGV[0]);
+my $mousefile = IO::SeqIO->newBySuffix(fn=>$ARGV[1]);
+my $mousedata = loadMouse($mousefile);
+$seq = $infile->next();
+while ($seq) {
+  my $pos = $seq->position();
+  my $chrom = $seq->position()->shortChrom();
+  my $left = $pos->left();
+  my $right = $pos->right();
+  my $regions = $synteny->getRegions($genomeDB,$chrom,$left,$right);
+#  print "blocks ",scalar @$regions,"\n";
+  if (scalar @$regions == 0) {
+#    next;
+  } elsif (scalar @$regions == 1) {
+#  foreach my $block (@$regions) {
+#    print "block\n";
+    my $block = $regions->[0];
+#    print Dumper($block);
+#    my @hsa = grep {$block->{$_}->genome eq 'hsa'} (keys %$block);
+    if (scalar keys(%$block) == 2) {
+      my $hsa = $block->{9606};
+      my $mmu = $block->{10090};
+      my $mpos = Seq::Position->new($mmu->chrom,$mmu->left,
+                                    $mmu->right,$mmu->strand);
+      my $mtrna = overlapMouse($mpos,$mousedata);
+      print sprintf("%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+                    $seq->id()->name(),
+                    $hsa->genome,
+                    $hsa->chrom,
+                    $hsa->left,
+                    $hsa->right,
+                    $hsa->right-$hsa->left+1,
+                    $hsa->strand,
+                    "mmu",
+                    $mmu->chrom,
+                    $mmu->left,
+                    $mmu->right,
+                    $mmu->right-$mmu->left+1,
+                    $mmu->strand,$mtrna);
+    }
+  } else {
+    print STDERR sprintf("multiple regions: %s\n",$seq->id()->name());
+  }
+#    print "end\n";
+#  }
+  $seq = $infile->next();
+}
+exit(0);

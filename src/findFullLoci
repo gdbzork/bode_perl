@@ -1,0 +1,115 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+use IO::SeqIO;
+use Struct::IntervalSet;
+use Seq::Position;
+use Struct::DisjointSet;
+
+$Data::Dumper::Maxdepth = 4;
+
+my $METHOD_DEFAULT = "PECAN";
+my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1};
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1};
+my $ROOT_DEFAULT = 'mmu';
+
+my ($method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+  );
+
+################################################################################
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+sub loadFA {
+  my ($fn) = @_;
+  my $fd = IO::SeqIO->newBySuffix(fn=>$fn);
+  my $fasta = {};
+  my $seq;
+  while ($seq = $fd->next()) {
+    $fasta->{$seq->id->name} = $seq;
+  }
+  $fd->close();
+  return $fasta;
+}
+
+sub getUniqueGenomes {
+  my ($block) = @_;
+  my $genomes = {};
+  my $fldcount = scalar @$block;
+  for (my $i=0;$i<$fldcount;$i++) {
+    $genomes->{$block->[$i]->{'taxid'}} = 1;
+  }
+  return $genomes;
+}
+
+sub main {
+  my ($rootSpecies,$locusFN,$fastaFN) = @_;
+
+  my $synteny = Synteny::Synteny->new($rootSpecies,$METHOD_DEFAULT,$GENOMES_DEFAULT);
+  $synteny->loadMLSS() || die("failed to load MLSS");
+  my $genomeDB = $synteny->getGenomeDB($rootSpecies);
+  my $slice_adaptor = &getSliceAdaptor($synteny,$rootSpecies);
+
+  my $seq;
+  my $fa;
+  my $genomeCount = scalar keys %$GENOMES_DEFAULT;
+  my $found = 0;
+  my $total = 0;
+  my $loci = IO::SeqIO->newBySuffix(fn=>$locusFN);
+  my $fasta = &loadFA($fastaFN);
+  while ($seq = $loci->next()) {
+    print STDERR $total," ",$found,"     \r";
+    $fa = $fasta->{$seq->id->name};
+    $total++;
+    my $chrom = $seq->position()->shortChrom();
+    my $left = $seq->position->left();
+    my $right = $seq->position->right();
+    my $strand = $seq->position->strand();
+    my $regions = $synteny->getRegionsList($genomeDB,$chrom,$left,$right,$strand,$fa->seq,$fa->id->name);
+    my $blnum = scalar @$regions;
+    for (my $i=0;$i<$blnum;$i++) {
+      my $block = $regions->[$i];
+      my $genomeset = &getUniqueGenomes($block);
+      if (scalar keys %$genomeset == $genomeCount) {
+        $found++;
+        foreach my $b (@$block) {
+#          my $b = $block->{$tid};
+#          print Ensembl::taxid2shortp{$b->taxid},"\tchr",$b->chrom,"\t",$b->left,"\t",$b->right,"\t",$b->strand,"\t",$b->seq,"\n";
+          my $x = $Ensembl::taxid2short->{$b->taxid};
+          print $b->taxid,"\t",$x,"\tchr",$b->chrom,"\t",$b->left,"\t",$b->right,"\t",$b->strand,"\t",$b->seq,"\n";
+        }
+        print "\n";
+      } else {
+        my $a = scalar keys %$block;
+#        print STDERR "wanted $genomeCount, got $a\n";
+      }
+    }
+  }
+  print STDERR "tried $total  candidate loci: $found\n"
+}
+  
+################################################################################
+
+Util::log_init(level=>$DEBUG);
+
+autoflush STDOUT 1;
+
+my $rootSpecies = $ARGV[0];
+my $locusFN = $ARGV[1];
+my $fastaFN = $ARGV[2];
+
+&main($rootSpecies,$locusFN,$fastaFN);
+
+exit(0);

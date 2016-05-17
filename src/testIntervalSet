@@ -1,0 +1,17 @@
+#!/usr/bin/perl
+
+use strict; use warnings;
+
+use Struct::IntervalSet;
+
+my $s = Struct::IntervalSet->new(fn=>$ARGV[0]);
+$s->summary();
+
+my $t = Struct::IntervalSet->new(fn=>$ARGV[0]);
+foreach my $seq (@{$t->{data}}) {
+  if (!$s->overlap($seq->position)) {
+    print "failed to find overlap for ", $seq->label, "\n";
+  } else {
+    print "found ", $seq->label, "\n";
+  }
+}

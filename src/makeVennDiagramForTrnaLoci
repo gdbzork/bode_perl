@@ -1,0 +1,217 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+use IO::SeqIO;
+use Struct::IntervalSet;
+use Seq::Position;
+use Struct::DisjointSet;
+use File::Basename;
+
+$Data::Dumper::Maxdepth = 2;
+
+my $METHOD_DEFAULT = "PECAN";
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'mml'=>1,'cfa'=>1};
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1};
+my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1};
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1};
+my $ROOT_DEFAULT = 'hsa';
+
+my ($method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+  );
+
+################################################################################
+
+sub processOptions {
+  $method = $METHOD_DEFAULT;
+  $genomes = $GENOMES_DEFAULT;
+  $root = $ROOT_DEFAULT;
+
+  my $genomeStr = undef;
+  my $rc = GetOptions("method=s" => \$method,
+                      "genomes=s" => \$genomeStr,
+                      "root=s" => \$root);
+  if (defined $genomeStr) {
+    $genomes = {};
+    my @flds = split ',', $genomeStr;
+    foreach my $gen (@flds) {
+      $genomes->{$gen} = 1;
+    }
+  }
+}
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+sub sortChroms {
+  my $an = $a->seq_region_name;
+  my $bn = $b->seq_region_name;
+  if ($an =~ /^\d+$/) {
+    if ($bn =~ /^\d+$/) {
+      return $an <=> $bn;
+    } else {
+      return -1;
+    }
+  } elsif ($bn =~ /^\d+$/) {
+    return 1;
+  } else {
+    return $an cmp $bn;
+  }
+}
+
+sub checkAgainstPred {
+  my ($iso,$results,$sset,$species,$pos,$seq,$djs) = @_;
+  my $ov = $sset->overlap($pos);
+  if ($ov) {
+    my $oviso = (split /_/, $ov->label)[1];
+    if ($oviso eq $iso) {
+      $results->{$species}->{'match'} += 1;
+      my $l1 = $seq->label;
+      my $l2 = $ov->label;
+      my $n1 = $djs->getNode($l1);
+      if (!defined $n1) {
+        $djs->makeSet($l1);
+        $n1 = $djs->getNode($l1);
+      }
+      my $n2 = $djs->getNode($l2);
+      if (!defined $n2) {
+        $djs->makeSet($l2);
+        $n2 = $djs->getNode($l2);
+      }
+      $djs->union($n1,$n2);
+    } else {
+      if (abs($ov->position->flength - $seq->position->flength) <= 5) {
+        $results->{$species}->{'mismatch'} += 1;
+      } else {
+        $results->{$species}->{'missing'} += 1;
+      }
+    }
+  } else {
+    $results->{$species}->{'missing'} += 1;
+  }
+}
+  
+sub main {
+  my ($root,$genomes,$method,$sets,$djs,$fapile) = @_;
+
+  my $synteny = Synteny::Synteny->new($root,$method,$genomes);
+
+  $synteny->loadMLSS() || die("failed to load MLSS");
+
+  my $genomeDB = $synteny->getGenomeDB($root);
+  my $slice_adaptor = &getSliceAdaptor($synteny,$root);
+
+  my $results = {};
+  print $root,"\n";
+  foreach my $x (keys %$genomes) {
+    $results->{$x} = {'unaligned'=>0,'match'=>0,'mismatch'=>0,'mutated'=>0,'missing'=>0};
+  }
+  delete $results->{$root};
+  my $seq;
+  foreach $seq (@{$sets->{$root}->{data}}) {
+#    print $seq->label,"\n";
+    my $pos = $seq->position();
+    my $chrom = $seq->position()->shortChrom();
+    my $left = $pos->left();
+    my $right = $pos->right();
+    my @flds = split /_/, $seq->label;
+    my $iso = $flds[1];
+    my $fa = $fapile->{$root}->{$seq->label}->seq();
+    my $regions = $synteny->getRegions($genomeDB,$chrom,$left,$right,$pos->strand,$fa,$seq->label);
+  #  print "blocks ",scalar @$regions,"\n";
+    my $holder = {};
+    foreach my $z (keys %$genomes) {
+      $holder->{$z} = 1;
+    }
+    delete $holder->{$root};
+    if (scalar @$regions == 0) {
+      foreach my $y (keys %$holder) {
+        $results->{$y}->{'unaligned'} += 1;
+      }
+    } else {
+      foreach my $block (@$regions) {
+  #      print "block\n";
+        foreach my $tid (keys %$block) {
+          my $b = $block->{$tid};
+          if ($b->genome eq $root) {
+            next;
+          }
+          my $npos = Seq::Position->new($b->chrom,$b->left,$b->right);
+          &checkAgainstPred($iso,$results,$sets->{$b->genome},$b->genome,$npos,$seq,$djs);
+  #        print sprintf("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\n",$b->genome,$b->chrom,$b->left,$b->right,$b->right-$b->left+1,$b->orig_left,$b->orig_right,$b->orig_right-$b->orig_left+1);
+        }
+      }
+  #    print "end\n";
+    }
+  }
+
+  my @z1 = keys %{$results};
+  my $z2 = shift @z1;
+  my @js = sort keys %{$results->{$z2}};
+  foreach my $k (@js) {
+    print "\t", $k;
+  }
+  print "\n";
+  foreach my $sp (keys %$results) {
+    print $sp;
+    my @ks = sort keys %{$results->{$sp}};
+    foreach my $k (@ks) {
+      print "\t", $results->{$sp}->{$k};
+    }
+    print "\n";
+  }
+}
+
+sub loadFA {
+  my ($bed,$prefix) = @_;
+  my $bn = basename($bed,".bed");
+  my $fn = "${bn}.fa";
+  get_logger()->info("Loading $fn...");
+  my $fafile = IO::SeqIO->newBySuffix(fn=>$fn);
+  my $fa = $fafile->next();
+  my $faset = {};
+  while ($fa) {
+    my $k = sprintf("%s_%s",$prefix,$fa->id->name);
+    $faset->{$k} = $fa;
+    $fa = $fafile->next();
+  }
+  $fafile->close();
+  return $faset;
+}
+
+################################################################################
+
+&processOptions();
+Util::log_init(level=>$DEBUG);
+
+autoflush STDOUT 1;
+
+my $sets = {};
+my $fapile;
+foreach my $fn (@ARGV) {
+  my @flds = split /_/, $fn;
+  my $species = $flds[1];
+  my $inter = Struct::IntervalSet->new(fn=>$fn,species=>$species);
+  $sets->{$species} = $inter;
+  $inter->summary();
+  $fapile->{$species} = &loadFA($fn,$species);
+}
+
+my $djs = Struct::DisjointSet->new();
+
+foreach my $root (keys %$sets) {
+  &main($root,$genomes,$method,$sets,$djs,$fapile);
+}
+
+$djs->dumpSets();
+exit(0);

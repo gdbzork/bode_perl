@@ -1,0 +1,257 @@
+#!/usr/bin/perl
+
+use strict;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+
+my $registry;
+my $sliceAdaptor;
+my @points;
+my %keepers;
+my $threshold = 400;
+my $flanking = 50;
+$Data::Dumper::Maxdepth = 2;
+
+{
+package Region;
+  sub new {
+    my ($class,$chrom,$left,$right) = @_;
+    my $self = {chrom=>$chrom,left=>$left-$flanking,right=>$right+$flanking};
+    bless $self, $class;
+    return $self;
+  }
+
+  sub chrom {
+    my $self = shift;
+    return $self->{'chrom'};
+  }
+
+  sub left {
+    my $self = shift;
+    return $self->{'left'};
+  }
+
+  sub right {
+    my $self = shift;
+    return $self->{'right'};
+  }
+
+  sub overlaps {
+    my ($self,$reg) = @_;
+    if ($self->chrom ne $reg->chrom) {
+      return 0;
+    }
+    return (($self->left >= $reg->left && $self->left <= $reg->right)
+         || ($self->right >= $reg->left && $self->right <= $reg->right)
+         || ($reg->right >= $self->left && $reg->right <= $self->right));
+  }
+
+  sub contains {
+    my ($self,$reg) = @_;
+    if ($self->chrom ne $reg->chrom) {
+      return 0;
+    }
+    return ($reg->left > $self->left && $reg->left < $self->right
+         && $reg->right > $self->left && $reg->right < $self->right)
+  }
+
+  sub str {
+    my $self = shift;
+    return sprintf("%s:%d-%d",$self->{chrom},$self->{left},$self->{right});
+  }
+}
+
+{
+package Feature;
+
+  $Feature::AnnotationRank = {Dust => 50,
+                              TRF => 40,
+                              RepeatMask => 10,
+                              DEFAULT => 20};
+
+  sub new {
+    my ($class,$point,$height) = @_;
+    my $region = undef;
+    my $id = sprintf("%s_%d",$point->{chrom},$point->left);
+    my $self = {id=>$id,point=>$point,height=>$height,region=>$region};
+    bless $self, $class;
+    return $self;
+  }
+  
+  sub rank {
+    my ($self,$analysis) = @_;
+    my $rank = $Feature::AnnotationRank->{DEFAULT};
+    if (exists $Feature::AnnotationRank->{$analysis}) {
+      $rank = $Feature::AnnotationRank->{$analysis};
+    }
+    return $rank;
+  }
+      
+  sub annotate {
+    my ($self,$region,$description,$analysis) = @_;
+    my $r = $self->rank($analysis);
+    if ($self->{region} == undef
+        || $r < $self->{rank}
+        || ($self->region->contains($region) && $r == $self->{rank}))
+    {
+      $self->{region} = $region;
+      $self->{description} = $description;
+      $self->{rank} = $r;
+    }
+  }
+
+  sub descr {
+    my $self = shift;
+    my $reg = (defined $self->{region}) ? $self->{region} : $self->{point};
+    return sprintf("%s\t%d\t%s",$reg->str,$self->{height},$self->{description});
+  }
+
+  sub id {
+    my $self = shift;
+    return $self->{id};
+  }
+
+  sub region {
+    my $self = shift;
+    return $self->{region};
+  }
+
+  sub point {
+    my $self = shift;
+    return $self->{point};
+  }
+}
+
+
+my $genome = {'hsa' => 'Homo sapiens',
+              'mmu' => 'Mouse',
+              'cfa' => 'Dog',
+              'mml' => 'macaca mulatta',
+              'rno' => 'rattus norvegicus',
+              'cja' => 'callithrix jacchus',
+              'mdo' => 'monodelphis domestica',
+              'gga' => 'gallus gallus',
+              'xtr' => 'xenopus tropicalis'};
+
+sub setupEnsembl {
+  my ($spec) = @_;
+  $registry = 'Bio::EnsEMBL::Registry';
+  $registry->load_registry_from_db(-host => 'ensembldb.ensembl.org',-user => 'anonymous');
+  $sliceAdaptor = $registry->get_adaptor( $genome->{$spec}, 'Core', 'Slice' );
+}
+
+sub loadWiggle {
+  my ($fn) = @_;
+  my $count = 0;
+  my $chrom;
+  open ZORK, $fn;
+  while (<ZORK>) {
+    my @flds = split;
+    if ($flds[0] eq "track") {
+      next;
+    } elsif ($flds[0] eq "variableStep") {
+      $chrom = substr($flds[1],6);
+      if (substr($chrom,0,3) eq "chr") {
+        $chrom = substr($chrom,3);
+      }
+      if ($chrom eq "M") {
+        $chrom = "MT";
+      }
+    } else {
+      my ($pos,$height) = split;
+      push @points, [$count++,$chrom,$pos,$height];
+    }
+  }
+  close ZORK;
+}
+
+sub overlap {
+  my ($chrom,$point,$keepers) = @_;
+  my @keys = keys %$keepers;
+  foreach my $k (@keys) {
+    my $item = $keepers->{$k}->region;
+    if ($chrom eq $item->{'chrom'} &&
+        $point >= $item->{'left'} &&
+        $point <= $item->{'right'}) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+sub process {
+  my ($feature,$keepers) = @_;
+  my $region = $feature->point;
+  my $slice = $sliceAdaptor->fetch_by_region('toplevel',$region->chrom,$region->left,$region->right);
+  if ($slice == undef) {
+    print STDERR "no slice: ", $feature->descr(),"\n";
+  } else {
+    my $genes = $slice->get_all_RepeatFeatures();
+#    print STDERR "got ",scalar @$genes," repeats...\n";
+    foreach my $rep (@$genes) {
+      my $region = new Region ($rep->seq_region_name,
+                               $rep->seq_region_start,
+                               $rep->seq_region_end);
+#      print STDERR Dumper($rep);
+#      print STDERR $rep->analysis->logic_name,"\n";
+      $feature->annotate($region,
+                         sprintf("%s %s",$rep->repeat_consensus->name,
+                                         $rep->repeat_consensus->repeat_type),
+                         $rep->analysis->logic_name);
+    }
+    $genes = $slice->get_all_Genes();
+#    print STDERR "got ",scalar @$genes," genes...\n";
+    foreach my $gene (@$genes) {
+      my $region = new Region ($gene->seq_region_name,
+                               $gene->seq_region_start,
+                               $gene->seq_region_end);
+      my $descr = $gene->description;
+      if ($descr == undef or $descr eq "") {
+        $descr = $gene->biotype;
+      }
+#      print STDERR Dumper($gene);
+#      print STDERR $gene->analysis->logic_name,"\n";
+      $feature->annotate($region,
+                         sprintf("%s %s.",$gene->stable_id,$descr),
+                         $gene->analysis->logic_name);
+    }
+    $keepers->{$feature->id} = $feature;
+  }
+}
+
+###############################################################################
+
+# connect to db
+&setupEnsembl($ARGV[0]);
+
+# load wiggle
+print STDERR "loading...\n";
+&loadWiggle($ARGV[1]);
+
+# sort
+print STDERR "sorting...\n";
+@points = sort { $b->[3] <=> $a->[3]; } @points;
+
+# isolate peaks, look up annotations
+print STDERR "looking up annotations...\n";
+my $i = 0;
+my $max = scalar @points;
+while (scalar keys %keepers < $threshold && $i < $max) {
+  my $point = $points[$i];
+  if (!&overlap($point->[1],$point->[2],\%keepers)) {
+    my $reg = new Region ($point->[1],$point->[2],$point->[2]);
+    my $feature = new Feature ($reg,$point->[3]);
+    &process($feature,\%keepers);
+  }
+  $i++;
+}
+
+my @ids = keys %keepers;
+@ids = sort { $keepers{$b}->{'height'} <=> $keepers{$a}->{'height'}; } @ids;
+print "Position\tHeight\tDescription\n";
+foreach my $id(@ids) {
+  print $keepers{$id}->descr(),"\n";
+}
+
+exit(0);
+

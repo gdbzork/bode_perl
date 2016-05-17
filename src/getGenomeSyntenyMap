@@ -1,0 +1,119 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+
+$Data::Dumper::Maxdepth = 4;
+
+my $VERBOSE_DEFAULT = 1;
+my $METHOD_DEFAULT = "PECAN";
+my $COUNT_DEFAULT = 12;
+my $GENOMES_DEFAULT = {'hsa'=>1,'mml'=>1,'mmu'=>1,'rno'=>1,
+                       'cfa'=>1,'mdo'=>1,'gga'=>1};
+my $ROOT_DEFAULT = 'hsa';
+
+my ($reg,     # Ensembl registry
+    $method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $count,   # Number of species (must match alignment method)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+    $verbose, # how much to talk (higher number => noisier)
+    $listmethods, # if we just want to see possible method types
+    $listsets, # genome sets (within a method)
+    $common   # show common name, not scientific name
+  );
+
+################################################################################
+
+sub processOptions {
+  $method = $METHOD_DEFAULT;
+  $count = $COUNT_DEFAULT;
+  $genomes = $GENOMES_DEFAULT;
+  $root = $ROOT_DEFAULT;
+  $verbose = $VERBOSE_DEFAULT;
+  $listmethods = 0;
+  $listsets = 0;
+  $common = 0;
+
+  my $genomeStr = undef;
+  my $rc = GetOptions("method=s" => \$method,
+                      "count=i" => \$count,
+                      "genomes=s" => \$genomeStr,
+                      "root=s" => \$root,
+                      "verbose=i" => \$verbose,
+                      "listmethods" => \$listmethods,
+                      "listsets" => \$listsets,
+                      "common" => \$common);
+  if (defined $genomeStr) {
+    $genomes = {};
+    my @flds = split ',', $genomeStr;
+    foreach my $gen (@flds) {
+      $genomes->{$gen} = 1;
+    }
+    $count = scalar @flds;
+  }
+}
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+sub sortChroms {
+  my $an = $a->seq_region_name;
+  my $bn = $b->seq_region_name;
+  if ($an =~ /^\d+$/) {
+    if ($bn =~ /^\d+$/) {
+      return $an <=> $bn;
+    } else {
+      return -1;
+    }
+  } elsif ($bn =~ /^\d+$/) {
+    return 1;
+  } else {
+    return $an cmp $bn;
+  }
+}
+
+################################################################################
+
+&processOptions();
+Util::log_init(level=>$DEBUG);
+
+my $synteny = Synteny::Synteny->new($root,$method,$genomes);
+if ($listmethods) {
+  $synteny->listMethods($listsets);
+  exit(0);
+} elsif ($listsets) {
+  $synteny->listGenomeSets($method,"",$common);
+  exit(0);
+}
+
+$synteny->loadMLSS();
+
+my $genomeDB = $synteny->getGenomeDB($root);
+my $slice_adaptor = &getSliceAdaptor($synteny,$root);
+
+my $chroms = $slice_adaptor->fetch_all("chromosome");
+my @chroms = sort sortChroms @$chroms;
+foreach my $chrom (@chroms) {
+  my $chromname = $chrom->seq_region_name;
+  print "chr ",$chromname, "  len=", $chrom->seq_region_length, "\n";
+  my $c = $synteny->countRegions($genomeDB,$chromname,1,$chrom->seq_region_length);
+  print "block count: ",scalar $c,"\n";
+#  foreach my $block (@$blocks) {
+#    print "block:\n";
+#    foreach my $tid (keys %$block) {
+#      print $block->{$tid}->string,"\n";
+#    }
+#  }
+  print "\n";
+}
+
+exit(0);

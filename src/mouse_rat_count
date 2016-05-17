@@ -1,0 +1,89 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+use IO::SeqIO;
+use Struct::IntervalSet;
+use Seq::Position;
+use Struct::DisjointSet;
+use File::Basename;
+
+$Data::Dumper::Maxdepth = 2;
+
+my $METHOD_DEFAULT = "EPO";
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'mml'=>1,'cfa'=>1};
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1};
+#my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1};
+my $GENOMES_DEFAULT = {'hsa'=>1,'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1};
+my $ROOT_DEFAULT = 'hsa';
+
+my ($method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+  );
+
+################################################################################
+
+sub processOptions {
+  $method = $METHOD_DEFAULT;
+  $genomes = $GENOMES_DEFAULT;
+  $root = $ROOT_DEFAULT;
+
+  my $genomeStr = undef;
+  my $rc = GetOptions("method=s" => \$method,
+                      "genomes=s" => \$genomeStr,
+                      "root=s" => \$root);
+  if (defined $genomeStr) {
+    $genomes = {};
+    my @flds = split ',', $genomeStr;
+    foreach my $gen (@flds) {
+      $genomes->{$gen} = 1;
+    }
+  }
+}
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+sub main {
+  my ($root,$method,$genomes) = @_;
+
+  my $synteny = Synteny::Synteny->new($root,$method,$genomes);
+
+  $synteny->loadMLSS() || die("failed to load MLSS");
+
+  print $root,"\t",$synteny->countCoverage(),"\n";
+}
+
+
+################################################################################
+
+&processOptions();
+Util::log_init(level=>$DEBUG);
+
+autoflush STDOUT 1;
+
+#foreach my $spec (keys %$genomes) {
+#  &main($spec,$method,$genomes);
+#  exit(0);
+#}
+my $synteny = Synteny::Synteny->new($root,$method,$genomes);
+
+$synteny->loadMLSS() || die("failed to load MLSS");
+
+my $map = $synteny->countCoverage();
+foreach my $tid (keys %$map) {
+  if (defined $Ensembl::taxid2short->{$tid}) {
+    print $tid,"\t",$Ensembl::taxid2short->{$tid},"\t",$map->{$tid},"\n";
+  }
+}
+
+exit(0);

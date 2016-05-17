@@ -1,0 +1,51 @@
+#!/usr/bin/perl
+
+use strict;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+
+my $PADDING = 50;
+my $METHOD = "PECAN";
+$Data::Dumper::Maxdepth = 4;
+
+my $genomes = {9606=>1,9544=>1,10090=>1,10116=>1,9615=>1,13616=>1,9031=>1};
+
+my $reg = "Bio::EnsEMBL::Registry";
+$reg->load_registry_from_db(-host=>"ensembldb.ensembl.org",
+                            -user=>"anonymous");
+
+my $slice_adaptor = $reg->get_adaptor("human","core","Slice");
+my $mlss_adaptor = $reg->get_adaptor("Multi","compara","MethodLinkSpeciesSet");
+my $mlsses = $mlss_adaptor->fetch_all_by_method_link_type($METHOD);
+my $mlss = $$mlsses[0];
+my $asa = $reg->get_adaptor("Multi","compara","AlignSlice");
+
+while (<>) {
+  my @fields = split;
+  my $trna = $fields[1];
+  my $chrom = substr($fields[5],3);
+  my $start = $fields[6];
+  my $end = $fields[7];
+  my $strand = $fields[8] eq "+" ? 1 : -1;
+  if ($start > $end) {
+    my $tmp = $start;
+    $start = $end;
+    $end = $tmp;
+  }
+  if ($strand == 1) {
+    $start = $start + 1;
+  } else {
+    $start = $start + 1;
+  }
+  print $trna," chr",$chrom," ",$start," ",$end," ",$strand,"\n";
+  my $slice = $slice_adaptor->fetch_by_region("chromosome",$chrom,$start,$end,$strand);
+  my $alignslice = $asa->fetch_by_Slice_MethodLinkSpeciesSet($slice,$mlss,"expanded");
+  foreach my $aslice (@{$alignslice->get_all_Slices()}) {
+    if (defined $genomes->{$aslice->genome_db->taxon_id()}) {
+      print $aslice->genome_db->taxon_id(),"  ",$aslice->seq_region_name,": ",$aslice->start,"-",$aslice->end,
+            "  ",$aslice->seq,"\n";
+  #    print STDERR Dumper($aslice);
+    }
+  }
+  print "\n";
+}

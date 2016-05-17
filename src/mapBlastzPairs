@@ -1,0 +1,109 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Bio::EnsEMBL::Registry;
+use Data::Dumper;
+use Log::Log4perl qw(get_logger :levels);
+use Ensembl;
+use Synteny::Synteny;
+use Util;
+use IO::SeqIO;
+
+$Data::Dumper::Maxdepth = 2;
+
+my $METHOD_DEFAULT = "BLASTZ_NET";
+my $GENOMES_DEFAULT = {'mmu'=>1,'rno'=>1,'mml'=>1,'cfa'=>1,'mdo'=>1};
+my $ROOT_DEFAULT = 'hsa';
+
+my ($method,  # Alignment method (PECAN, EPO, BLASTZ_NET, etc)
+    $genomes, # Genomes of interest
+    $root,    # Which genome to use as a root
+  );
+
+################################################################################
+
+sub processOptions {
+  $method = $METHOD_DEFAULT;
+  $genomes = $GENOMES_DEFAULT;
+  $root = $ROOT_DEFAULT;
+
+  my $genomeStr = undef;
+  my $rc = GetOptions("method=s" => \$method,
+                      "genomes=s" => \$genomeStr,
+                      "root=s" => \$root);
+  if (defined $genomeStr) {
+    $genomes = {};
+    my @flds = split ',', $genomeStr;
+    foreach my $gen (@flds) {
+      $genomes->{$gen} = 1;
+    }
+  }
+}
+
+sub getSliceAdaptor {
+  my ($syn,$root) = @_;
+  return $syn->{registry}->get_adaptor($Ensembl::genome->{$root},"core","Slice");
+}
+
+################################################################################
+
+&processOptions();
+Util::log_init(level=>$DEBUG);
+
+my $synset = {};
+my $slicead_set = {};
+my $fset = {};
+foreach my $genome (keys %$genomes) {
+  my $synteny = Synteny::Synteny->new($root,$method,{$genome=>1,$root=>1});
+  $synteny->loadMLSS() || die("failed to load MLSS");
+  $synset->{$genome} = $synteny;
+  $fset->{$genome} = 0;
+}
+$fset->{$root} = 0;
+
+
+autoflush STDOUT 1;
+
+my $seq;
+my $infile = IO::SeqIO->newBySuffix(fn=>$ARGV[0]);
+my $fasta = IO::SeqIO->newBySuffix(fn=>$ARGV[1]);
+$seq = $infile->next();
+while ($seq) {
+  my $fa = $fasta->next();
+  if (!$fa->id->equals($seq->id)) {
+    my $s = $seq->id;
+    my $f = $fa->id;
+    get_logger()->error("seq id $s != fa id $f");
+    exit(-1);
+  }
+  my $pos = $seq->position();
+  my $chrom = $seq->position()->shortChrom();
+  my $left = $pos->left();
+  my $right = $pos->right();
+  my $strand = $pos->strand();
+  for my $genome (keys %$genomes) {
+    my $synteny = $synset->{$genome};
+    my $slice_adaptor = &getSliceAdaptor($synteny,$root);
+    my $genomeDB = $synteny->getGenomeDB($root);
+    my $regions = $synteny->getRegions($genomeDB,$chrom,$left,$right,$strand,$fa->seq,$fa->id->name);
+    print $genome," blocks ",scalar @$regions,"\n" if scalar @$regions > 0;
+    foreach my $block (@$regions) {
+      print "block\n";
+      foreach my $tid (keys %$block) {
+        my $b = $block->{$tid};
+        print sprintf("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\n",$b->genome,$b->chrom,$b->left,$b->right,$b->right-$b->left+1,$b->orig_left,$b->orig_right,$b->orig_right-$b->orig_left+1);
+        print $b->seq,"\n";
+        if (length($b->seq) > 40) {
+          $fset->{$b->genome} += 1;
+        }
+      }
+      print "end\n";
+    }
+  }
+  $seq = $infile->next();
+}
+foreach my $k (keys %$fset) {
+  print $k, " ", $fset->{$k},"\n";
+}
+exit(0);
