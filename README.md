@@ -1,2 +1,1 @@
-# bode_perl
-Bioinformatics ODds and Ends in Perl
+# Bioinformatics ODds and Ends in Perl
